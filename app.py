@@ -1,7 +1,7 @@
 # ============================================================
 # CABECERA
 # ============================================================
-# Alumno: Nombre Apellido
+# Alumno: Mariona Macià Cuartero
 # URL Streamlit Cloud: https://...streamlit.app
 # URL GitHub: https://github.com/...
 
@@ -46,8 +46,71 @@ MODEL = "gpt-4.1-mini"
 # mostrar un JSON de ejemplo), usa doble llave: {{ y }}
 #
 SYSTEM_PROMPT = """
+Eres un asistente especializado en análisis de datos de Spotify mediante generación de código Python.
 
+Recibes preguntas en lenguaje natural sobre el historial de escucha de un usuario.
 
+Tu tarea NO es responder directamente, sino generar código Python que analice un DataFrame llamado `df`.
+
+El DataFrame `df` ya está cargado y contiene los datos procesados del historial de escucha.
+
+El dataset cubre desde {fecha_min} hasta {fecha_max}.
+Las plataformas disponibles son: {plataformas}.
+Los valores posibles de reason_start son: {reason_start_values}.
+Los valores posibles de reason_end son: {reason_end_values}.
+
+Puedes responder únicamente preguntas analíticas basadas en los datos, incluyendo:
+
+- Rankings (artistas, canciones, álbumes)
+- Evolución temporal (por día, mes, año)
+- Patrones de uso (horas, días de la semana, fin de semana vs entre semana)
+- Comportamiento de escucha (skips, shuffle, duración)
+- Comparaciones entre periodos (meses, años, estaciones)
+
+Columnas disponibles en `df`:
+
+- ts (datetime)
+- date, year, month, month_name, day, hour
+- day_of_week, day_name, is_weekend
+- season
+- artist, track, album
+- minutes_played, hours_played
+- skipped, shuffle
+- platform, reason_start, reason_end
+
+Reglas para el código:
+
+- Usa únicamente pandas (pd), plotly.express (px) y plotly.graph_objects (go)
+- El DataFrame disponible se llama `df`
+- NO cargues archivos ni redefinas `df`
+- NO inventes columnas ni uses campos que no estén en `df`
+- NO uses print()
+- NO uses st. (streamlit)
+- NO uses matplotlib
+
+- El código debe generar SIEMPRE una variable llamada `fig`
+- `fig` debe ser una figura de Plotly (px o go)
+
+Formato de salida:
+
+Debes devolver SIEMPRE un único JSON válido con esta estructura:
+
+{{
+  "tipo": "grafico" o "fuera_de_alcance",
+  "codigo": "código Python ejecutable",
+  "interpretacion": "explicación breve del resultado"
+}}
+
+- NO incluyas texto fuera del JSON
+
+Si la pregunta no puede resolverse con los datos disponibles:
+
+- responde con:
+{{
+  "tipo": "fuera_de_alcance",
+  "codigo": "",
+  "interpretacion": "explica brevemente por qué no se puede responder"
+}}
 """
 
 
@@ -62,20 +125,59 @@ SYSTEM_PROMPT = """
 def load_data():
     df = pd.read_json("streaming_history.json")
 
-    # ----------------------------------------------------------
-    # >>> TU PREPARACIÓN DE DATOS ESTÁ AQUÍ <<<
-    # ----------------------------------------------------------
-    # Transforma el dataset para facilitar el trabajo del LLM.
-    # Lo que hagas aquí determina qué columnas tendrá `df`,
-    # y tu system prompt debe describir exactamente esas columnas.
-    #
-    # Cosas que podrías considerar:
-    # - Convertir 'ts' de string a datetime
-    # - Crear columnas derivadas (hora, día de la semana, mes...)
-    # - Convertir milisegundos a unidades más legibles
-    # - Renombrar columnas largas para simplificar el código generado
-    # - Filtrar registros que no aportan al análisis (podcasts, etc.)
-    # ----------------------------------------------------------
+    df = df.rename(columns={
+        "master_metadata_track_name": "track",
+        "master_metadata_album_artist_name": "artist",
+        "master_metadata_album_album_name": "album"
+    })
+
+    # 1. Convertir timestamp a datetime
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+
+    # 2. Eliminar filas sin timestamp válido
+    df = df.dropna(subset=["ts"]).copy()
+
+    # 3. Crear columnas temporales derivadas
+    df["date"] = df["ts"].dt.date
+    df["year"] = df["ts"].dt.year
+    df["month"] = df["ts"].dt.month
+    df["month_name"] = df["ts"].dt.month_name()
+    df["day"] = df["ts"].dt.day
+    df["hour"] = df["ts"].dt.hour
+    df["day_of_week"] = df["ts"].dt.dayofweek
+    df["day_name"] = df["ts"].dt.day_name()
+
+    # 4. Crear indicador de fin de semana
+    df["is_weekend"] = df["day_of_week"].isin([5, 6])
+
+    # 5. Convertir duración a minutos y horas
+    df["minutes_played"] = df["ms_played"] / 60000
+    df["hours_played"] = df["ms_played"] / 3600000
+
+    # 6. Estandarizar columnas booleanas si existen
+    if "skipped" in df.columns:
+        df["skipped"] = df["skipped"].fillna(False).astype(bool)
+
+    if "shuffle" in df.columns:
+        df["shuffle"] = df["shuffle"].fillna(False).astype(bool)
+
+    # 7. Crear estación del año a partir del mes
+    season_map = {
+        12: "winter", 1: "winter", 2: "winter",
+        3: "spring", 4: "spring", 5: "spring",
+        6: "summer", 7: "summer", 8: "summer",
+        9: "autumn", 10: "autumn", 11: "autumn"
+    }
+    df["season"] = df["month"].map(season_map)
+
+    # 8. Limpiar columnas de texto frecuentes si existen
+    text_cols = ["artist", "track", "album", "platform", "reason_start", "reason_end"]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("Unknown").astype(str).str.strip()
+
+    # 9. Eliminar registros sin artista o canción identificable
+    df = df[(df["artist"] != "Unknown") & (df["track"] != "Unknown")].copy()
 
     return df
 
@@ -256,7 +358,10 @@ if prompt := st.chat_input("Ej: ¿Cuál es mi artista más escuchado?"):
 #    el LLM? ¿Qué devuelve? ¿Dónde se ejecuta el código generado?
 #    ¿Por qué el LLM no recibe los datos directamente?
 #
-#    [Tu respuesta aquí]
+#    Mi aplicación sigue una arquitectura text-to-code: el usuario escribe una pregunta en lenguaje natural y el LLM devuelve un JSON con código Python, tipo de respuesta e interpretación breve.
+#    El modelo no calcula directamente el resultado, sino que genera código para analizar un DataFrame `df` ya cargado y preparado en la app.
+#    Ese código se ejecuta después con `exec()` en Python, en un entorno controlado con acceso solo a `df`, `pd`, `px` y `go`.
+#    El LLM no recibe los datos directamente porque así reduzco coste y contexto, y obligo a que el resultado salga de código ejecutado sobre datos reales, no de texto inventado.
 #
 #
 # 2. EL SYSTEM PROMPT COMO PIEZA CLAVE
@@ -265,11 +370,18 @@ if prompt := st.chat_input("Ej: ¿Cuál es mi artista más escuchado?"):
 #    de tu prompt, y otro de una que falla o fallaría si quitases
 #    una instrucción.
 #
-#    [Tu respuesta aquí]
+#    El system prompt define el comportamiento del modelo: qué preguntas puede resolver, qué columnas existen en `df`, qué librerías puede usar, que debe crear una figura Plotly llamada `fig` y que la salida debe ser un JSON válido.
+#    También le paso información dinámica del dataset, como rango de fechas, plataformas y valores de `reason_start` y `reason_end`, para ajustar mejor las respuestas.
+#    Por ejemplo, la pregunta “¿Más entre semana o el fin de semana?” funciona bien porque en `load_data()` creo la columna `is_weekend` y en el prompt indico que existe.
+#    Si quitase la instrucción de no inventar columnas, el modelo podría usar nombres inexistentes y generar código que fallaría al ejecutarse.entar
+#    columnas”, el modelo podría intentar usar nombres que no existen y generar código que fallaría al ejecutarse.
 #
 #
 # 3. EL FLUJO COMPLETO
 #    Describe paso a paso qué ocurre desde que el usuario escribe
 #    una pregunta hasta que ve el gráfico en pantalla.
 #
-#    [Tu respuesta aquí]
+#    Cuando el usuario escribe una pregunta, Streamlit la recoge y la envía junto con el system prompt a la API.
+#    Antes de eso, la app ya ha cargado el JSON y ha preparado `df` con columnas derivadas como `hour`, `day_name`, `is_weekend`, `minutes_played` o `season`.
+#    El LLM devuelve un texto que debería ser un JSON; la app lo parsea y comprueba el campo `tipo`.
+#    Si es `fuera_de_alcance`, muestra solo la interpretación; si es `grafico`, ejecuta el código generado, obtiene `fig` y renderiza el gráfico en pantalla junto con la interpretación y el código.
