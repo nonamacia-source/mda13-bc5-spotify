@@ -2,8 +2,8 @@
 # CABECERA
 # ============================================================
 # Alumno: Mariona Macià Cuartero
-# URL Streamlit Cloud: https://...streamlit.app
-# URL GitHub: https://github.com/...
+# URL Streamlit Cloud: https://mda13-bc5-spotify-gh2tpq92tgdfccappkflqhy.streamlit.app/
+# URL GitHub: https://github.com/nonamacia-source/mda13-bc5-spotify.git
 
 # ============================================================
 # IMPORTS
